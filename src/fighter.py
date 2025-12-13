@@ -31,7 +31,9 @@ class Fighter:
     def __init__(self, x, ground_y, is_ai=False, controls=None):
         self.x = x
         self.y = ground_y - self.HEIGHT
+        self.ground_y = ground_y
         self.vx = 0
+        self.sprite_path = None
         self.rect = pygame.Rect(int(self.x), int(self.y), self.WIDTH, self.HEIGHT)
         self.health = 100
         self.is_ai = is_ai
@@ -48,9 +50,12 @@ class Fighter:
         self._load_sprite()
 
     def _load_sprite(self):
-        # look for a simple single-row sprite sheet at assets/character.png
+        # look for the fighter-specific sprite path if provided, otherwise fallback
         base = Path(__file__).resolve().parents[1]
-        candidate = base / 'assets' / 'character.png'
+        if hasattr(self, 'sprite_path') and self.sprite_path:
+            candidate = Path(self.sprite_path)
+        else:
+            candidate = base / 'assets' / 'character.png'
         if candidate.exists():
             try:
                 img = pygame.image.load(str(candidate)).convert_alpha()
@@ -65,7 +70,15 @@ class Fighter:
                     frame = img.subsurface((i * fw, 0, fw, h)).copy()
                     frames.append(frame)
                 self.sprite_frames = frames
-                self.animator = SpriteAnimator(self.sprite_frames, fps=8)
+                # map frames to actions (counts must match generator)
+                counts = {'idle': 4, 'walk': 4, 'punch': 3, 'kick': 3, 'jump': 3}
+                idx = 0
+                self.anim_map = {}
+                for action, cnt in counts.items():
+                    self.anim_map[action] = frames[idx:idx+cnt]
+                    idx += cnt
+                # default animator uses idle
+                self.animator = SpriteAnimator(self.anim_map.get('idle', []), fps=8)
                 print('Loaded', n, 'sprite frames for fighter from', candidate)
             except Exception as e:
                 print('Failed to load sprite:', e)
@@ -76,6 +89,7 @@ class Fighter:
         right_key = self.controls.get("right")
         punch_key = self.controls.get("punch")
         kick_key = self.controls.get("kick")
+        jump_key = self.controls.get("jump")
 
         if left_key and keys[left_key]:
             self.vx = -220
@@ -84,9 +98,20 @@ class Fighter:
             self.vx = 220
             self.facing_left = False
         if punch_key and keys[punch_key]:
+            self.attack_type = 'punch'
             self.start_attack()
         if kick_key and keys[kick_key]:
+            self.attack_type = 'kick'
             self.start_attack(force=True)
+        if jump_key and keys[jump_key] and self.on_ground():
+            # jump impulse
+            if not hasattr(self, 'vy'):
+                self.vy = 0.0
+            self.vy = -360
+            # set jump animation
+            if hasattr(self, 'anim_map') and 'jump' in self.anim_map:
+                self.animator.frames = self.anim_map['jump']
+                self.animator.index = 0.0
 
     def ai_update(self, other, dt):
         if not self.is_ai:
@@ -103,35 +128,89 @@ class Fighter:
             self.start_attack()
 
     def start_attack(self, force=False):
-        if not self.is_attacking:
+        if not self.is_attacking and self.on_ground():
             self.is_attacking = True
             self.attack_timer = self.attack_duration
+            # set attack type earlier when called with type param (kept compatibility)
+            if not hasattr(self, 'attack_type') or self.attack_type is None:
+                self.attack_type = 'punch' if not force else 'kick'
+            # set corresponding animation
+            if hasattr(self, 'anim_map') and self.attack_type in self.anim_map:
+                self.animator.frames = self.anim_map[self.attack_type]
+                self.animator.index = 0.0
 
     def attack_rect(self):
         if not self.is_attacking:
             return pygame.Rect(0, 0, 0, 0)
-        if self.facing_left:
-            return pygame.Rect(self.rect.left - 30, self.rect.top + 30, 30, 20)
+        # active only in the middle of attack duration
+        # position differs for punch vs kick
+        atype = getattr(self, 'attack_type', 'punch')
+        if atype == 'kick':
+            w, h = 40, 20
+            y_off = 40
         else:
-            return pygame.Rect(self.rect.right, self.rect.top + 30, 30, 20)
+            w, h = 36, 18
+            y_off = 30
+        if self.facing_left:
+            return pygame.Rect(self.rect.left - w, self.rect.top + y_off, w, h)
+        else:
+            return pygame.Rect(self.rect.right, self.rect.top + y_off, w, h)
+
+    def on_ground(self):
+        # check if fighter is on stored ground level (allow small tolerance)
+        return (self.y + self.HEIGHT) >= (getattr(self, 'ground_y', self.y + self.HEIGHT) - 1)
 
     def take_damage(self, amount):
         self.health = max(0, self.health - amount)
 
     def update(self, dt):
+        # horizontal
         self.x += self.vx * dt
         self.rect.x = int(self.x)
+
+        # vertical physics
+        if not hasattr(self, 'vy'):
+            self.vy = 0.0
+        self.vy += 900 * dt  # gravity
+        self.y += self.vy * dt
+        # ground clamp: use stored ground_y
+        GROUND_Y = getattr(self, 'ground_y', (600 - 120))
+        # rect bottom should not go below ground
+        if self.y + self.HEIGHT >= GROUND_Y:
+            self.y = GROUND_Y - self.HEIGHT
+            self.vy = 0
+        self.rect.y = int(self.y)
         if self.is_attacking:
             self.attack_timer -= dt
             if self.attack_timer <= 0:
                 self.is_attacking = False
+                self.attack_type = None
 
-        if self.animator:
-            # choose animation speed; faster when moving
-            if abs(self.vx) > 0:
-                self.animator.fps = 10
+        # update animator based on state
+        if hasattr(self, 'anim_map'):
+            # determine current state
+            if self.is_attacking:
+                state = getattr(self, 'attack_type', 'punch')
+            elif getattr(self, 'vy', 0) < -1:
+                state = 'jump'
+            elif abs(self.vx) > 10:
+                state = 'walk'
             else:
+                state = 'idle'
+
+            frames = self.anim_map.get(state, self.anim_map.get('idle', []))
+            if self.animator.frames is not frames:
+                self.animator.frames = frames
+                self.animator.index = 0.0
+            # adjust fps per state
+            if state == 'walk':
+                self.animator.fps = 12
+            elif state == 'idle':
                 self.animator.fps = 6
+            elif state in ('punch', 'kick'):
+                self.animator.fps = 18
+            elif state == 'jump':
+                self.animator.fps = 10
             self.animator.update(dt)
 
     def draw(self, surface):

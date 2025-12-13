@@ -8,17 +8,17 @@ from pathlib import Path
 project_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(project_root))
 
-# If a sprite isn't present, generate a simple placeholder so the game runs out-of-box.
-sprite_path = project_root / 'assets' / 'character.png'
-if not sprite_path.exists():
+# If player sprites aren't present, generate two original archetype sprites
+p1 = project_root / 'assets' / 'player1.png'
+p2 = project_root / 'assets' / 'player2.png'
+if not p1.exists() or not p2.exists():
     try:
-        # import the generator from scripts package
-        from scripts.generate_sprite import generate_placeholder
+        from scripts.generate_sprite import generate_pair
 
-        print('No sprite found; generating placeholder at', sprite_path)
-        generate_placeholder(str(sprite_path))
+        print('Generating archetype sprites at', p1, 'and', p2)
+        generate_pair(str(p1), str(p2))
     except Exception as e:
-        print('Could not generate placeholder sprite:', e)
+        print('Could not generate archetype sprites:', e)
 
 import pygame
 from game import Game

@@ -1,5 +1,6 @@
 import pygame
 from fighter import Fighter
+from pathlib import Path
 
 WIDTH, HEIGHT = 800, 600
 GROUND_Y = HEIGHT - 120
@@ -15,8 +16,26 @@ class Game:
             "right": pygame.K_d,
             "punch": pygame.K_j,
             "kick": pygame.K_k,
+            "jump": pygame.K_w,
         })
         self.ai = Fighter(600, GROUND_Y, is_ai=True)
+        # set player-specific sprite path
+        base = Path(__file__).resolve().parents[1]
+        p1 = base / 'assets' / 'player1.png'
+        p2 = base / 'assets' / 'player2.png'
+        if p1.exists():
+            self.player.sprite_path = str(p1)
+            # reload sprites now that path is set
+            try:
+                self.player._load_sprite()
+            except Exception:
+                pass
+        if p2.exists():
+            self.ai.sprite_path = str(p2)
+            try:
+                self.ai._load_sprite()
+            except Exception:
+                pass
         self.font = pygame.font.Font(None, 36)
         self.running = True
 
@@ -39,14 +58,32 @@ class Game:
         self.ai.ai_update(self.player, dt)
         self.ai.update(dt)
 
-        # simple combat: check attack rectangles
+        # simple combat: check attack rectangles with active windows
         for attacker, defender in ((self.player, self.ai), (self.ai, self.player)):
-            if attacker.is_attacking and attacker.attack_rect().colliderect(defender.rect):
-                if not defender.took_hit:
-                    defender.take_damage(10)
-                    defender.took_hit = True
-            if not attacker.is_attacking:
-                defender.took_hit = False
+            if attacker.is_attacking:
+                # determine active portion of attack (middle 50%)
+                t = attacker.attack_timer
+                total = attacker.attack_duration if attacker.attack_duration > 0 else 0.001
+                active = (t < total * 0.75) and (t > total * 0.25)
+                if active:
+                    ar = attacker.attack_rect()
+                    if ar.colliderect(defender.rect) and getattr(defender, 'hit_cooldown', 0) <= 0:
+                        # apply damage and knockback
+                        dmg = 15 if getattr(attacker, 'attack_type', 'punch') == 'kick' else 10
+                        defender.take_damage(dmg)
+                        # simple knockback
+                        kb = 200 if getattr(attacker, 'attack_type', 'kick') == 'kick' else 100
+                        if attacker.rect.centerx < defender.rect.centerx:
+                            defender.x += kb * 0.05
+                        else:
+                            defender.x -= kb * 0.05
+                        defender.vy = -180
+                        defender.hit_cooldown = 0.6
+            # decrement hit cooldowns
+            if getattr(defender, 'hit_cooldown', 0) > 0:
+                defender.hit_cooldown -= dt
+                if defender.hit_cooldown < 0:
+                    defender.hit_cooldown = 0
 
     def draw(self):
         self.screen.fill((45, 45, 70))

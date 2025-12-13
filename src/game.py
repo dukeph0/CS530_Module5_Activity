@@ -36,7 +36,13 @@ class Game:
                 self.ai._load_sprite()
             except Exception:
                 pass
+        # HUD/fonts and round state
+        self.small_font = pygame.font.Font(None, 24)
         self.font = pygame.font.Font(None, 36)
+        self.game_over = False
+        self.timer = 60.0
+        self.score_p1 = 0
+        self.score_ai = 0
         self.running = True
 
     def run(self):
@@ -50,8 +56,17 @@ class Game:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.running = False
+            if event.type == pygame.KEYDOWN and self.game_over:
+                if event.key == pygame.K_RETURN or event.key == pygame.K_r:
+                    self.reset_round()
 
     def update(self, dt):
+        if self.game_over:
+            return
+
+        # update challenge timer
+        self.timer = max(0.0, self.timer - dt)
+
         keys = pygame.key.get_pressed()
         self.player.handle_input(keys)
         self.player.update(dt)
@@ -79,16 +94,29 @@ class Game:
                             defender.x -= kb * 0.05
                         defender.vy = -180
                         defender.hit_cooldown = 0.6
+                        # scoring
+                        if attacker is self.player:
+                            self.score_p1 += dmg
+                        else:
+                            self.score_ai += dmg
             # decrement hit cooldowns
             if getattr(defender, 'hit_cooldown', 0) > 0:
                 defender.hit_cooldown -= dt
                 if defender.hit_cooldown < 0:
                     defender.hit_cooldown = 0
 
+        # win/loss conditions
+        if self.player.health <= 0 or self.ai.health <= 0 or self.timer <= 0:
+            self.game_over = True
+
     def draw(self):
         self.screen.fill((45, 45, 70))
         # ground
         pygame.draw.rect(self.screen, (30, 200, 30), (0, GROUND_Y + 50, WIDTH, HEIGHT - (GROUND_Y + 50)))
+        # simple 2D shapes (challenge visual flavor)
+        pygame.draw.circle(self.screen, (90, 90, 140), (WIDTH // 2, GROUND_Y + 70), 30)
+        pygame.draw.rect(self.screen, (120, 80, 160), (WIDTH - 120, GROUND_Y + 60, 60, 30))
+
         self.player.draw(self.screen)
         self.ai.draw(self.screen)
 
@@ -98,4 +126,48 @@ class Game:
         self.screen.blit(p_text, (20, 20))
         self.screen.blit(a_text, (WIDTH - 160, 20))
 
+        # Score + Timer
+        score_text = self.font.render(f"Score P1: {self.score_p1}  AI: {self.score_ai}", True, (255, 255, 0))
+        time_text = self.font.render(f"Time: {int(self.timer)}", True, (255, 255, 255))
+        self.screen.blit(score_text, (WIDTH//2 - 150, 20))
+        self.screen.blit(time_text, (WIDTH//2 + 80, 20))
+
+        # On-screen instructions
+        instr1 = self.small_font.render("Controls: A/D move, W jump, J punch, K kick", True, (220, 220, 220))
+        instr2 = self.small_font.render("Win by KO or high score when time ends. Press Enter/R to restart.", True, (220, 220, 220))
+        self.screen.blit(instr1, (20, 50))
+        self.screen.blit(instr2, (20, 72))
+
+        # Game over banner
+        if self.game_over:
+            # decide winner text
+            if self.player.health > self.ai.health:
+                result = "Player 1 Wins!"
+            elif self.ai.health > self.player.health:
+                result = "AI Wins!"
+            else:
+                result = "Draw!"
+            over = self.font.render(result + " Press Enter/R to restart.", True, (255, 200, 200))
+            rect = over.get_rect(center=(WIDTH//2, HEIGHT//2 - 100))
+            self.screen.blit(over, rect)
+
         pygame.display.flip()
+
+    def reset_round(self):
+        # reset health, positions, timer, scores remain to show cumulative performance
+        self.player.health = 100
+        self.ai.health = 100
+        self.player.x = 100
+        self.player.y = GROUND_Y - self.player.HEIGHT
+        self.ai.x = 600
+        self.ai.y = GROUND_Y - self.ai.HEIGHT
+        self.player.vx = 0
+        self.player.vy = 0
+        self.ai.vx = 0
+        self.ai.vy = 0
+        self.player.rect.x = int(self.player.x)
+        self.player.rect.y = int(self.player.y)
+        self.ai.rect.x = int(self.ai.x)
+        self.ai.rect.y = int(self.ai.y)
+        self.timer = 60.0
+        self.game_over = False

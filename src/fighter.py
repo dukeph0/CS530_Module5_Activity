@@ -26,20 +26,23 @@ class SpriteAnimator:
 
 
 class Fighter:
+    # base dimensions; will be overridden after sprite load with scale applied
     WIDTH, HEIGHT = 60, 100
 
     def __init__(self, x, ground_y, is_ai=False, controls=None):
+        self.scale = 1.6  # make fighters larger on screen
         self.x = x
-        self.y = ground_y - self.HEIGHT
         self.ground_y = ground_y
-        self.vx = 0
         self.sprite_path = None
-        self.rect = pygame.Rect(int(self.x), int(self.y), self.WIDTH, self.HEIGHT)
+        self.vx = 0
+        # temp rect; will be resized after sprite load using scale
+        self.rect = pygame.Rect(int(self.x), int(ground_y - self.HEIGHT), self.WIDTH, self.HEIGHT)
         self.health = 100
         self.is_ai = is_ai
         self.controls = controls or {}
         self.facing_left = False if not is_ai else True
         self.is_attacking = False
+        self.just_started_attack = False
         self.attack_timer = 0.0
         self.attack_duration = 0.18
         self.took_hit = False
@@ -48,6 +51,9 @@ class Fighter:
         self.sprite_frames = []
         self.animator = None
         self._load_sprite()
+        # anchor to ground after sprite size applied
+        self.y = self.ground_y - self.rect.height
+        self.rect.y = int(self.y)
 
     def _load_sprite(self):
         # look for the fighter-specific sprite path if provided, otherwise fallback
@@ -79,6 +85,12 @@ class Fighter:
                     idx += cnt
                 # default animator uses idle
                 self.animator = SpriteAnimator(self.anim_map.get('idle', []), fps=8)
+                # resize rect based on sprite frame and scale
+                scaled_w = int(fw * self.scale)
+                scaled_h = int(h * self.scale)
+                self.WIDTH, self.HEIGHT = scaled_w, scaled_h
+                self.rect.width = scaled_w
+                self.rect.height = scaled_h
                 print('Loaded', n, 'sprite frames for fighter from', candidate)
             except Exception as e:
                 print('Failed to load sprite:', e)
@@ -97,11 +109,13 @@ class Fighter:
         if right_key and keys[right_key]:
             self.vx = 220
             self.facing_left = False
-        if punch_key and keys[punch_key]:
+        if not self.is_attacking and punch_key and keys[punch_key]:
             self.attack_type = 'punch'
+            self.just_started_attack = True
             self.start_attack()
-        if kick_key and keys[kick_key]:
+        if not self.is_attacking and kick_key and keys[kick_key]:
             self.attack_type = 'kick'
+            self.just_started_attack = True
             self.start_attack(force=True)
         if jump_key and keys[jump_key] and self.on_ground():
             # jump impulse
@@ -125,7 +139,9 @@ class Fighter:
             self.facing_left = False
         else:
             self.vx = 0
-            self.start_attack()
+            if not self.is_attacking:
+                self.just_started_attack = True
+                self.start_attack()
 
     def start_attack(self, force=False):
         if not self.is_attacking and self.on_ground():
@@ -145,12 +161,9 @@ class Fighter:
         # active only in the middle of attack duration
         # position differs for punch vs kick
         atype = getattr(self, 'attack_type', 'punch')
-        if atype == 'kick':
-            w, h = 40, 20
-            y_off = 40
-        else:
-            w, h = 36, 18
-            y_off = 30
+        w = int(self.rect.width * (0.55 if atype == 'punch' else 0.65))
+        h = int(self.rect.height * 0.2)
+        y_off = int(self.rect.height * (0.35 if atype == 'punch' else 0.55))
         if self.facing_left:
             return pygame.Rect(self.rect.left - w, self.rect.top + y_off, w, h)
         else:
@@ -158,7 +171,8 @@ class Fighter:
 
     def on_ground(self):
         # check if fighter is on stored ground level (allow small tolerance)
-        return (self.y + self.HEIGHT) >= (getattr(self, 'ground_y', self.y + self.HEIGHT) - 1)
+        height = getattr(self, 'HEIGHT', self.rect.height)
+        return (self.y + height) >= (getattr(self, 'ground_y', self.y + height) - 1)
 
     def take_damage(self, amount):
         self.health = max(0, self.health - amount)
@@ -175,9 +189,10 @@ class Fighter:
         self.y += self.vy * dt
         # ground clamp: use stored ground_y
         GROUND_Y = getattr(self, 'ground_y', (600 - 120))
+        height = getattr(self, 'HEIGHT', self.rect.height)
         # rect bottom should not go below ground
-        if self.y + self.HEIGHT >= GROUND_Y:
-            self.y = GROUND_Y - self.HEIGHT
+        if self.y + height >= GROUND_Y:
+            self.y = GROUND_Y - height
             self.vy = 0
         self.rect.y = int(self.y)
         if self.is_attacking:

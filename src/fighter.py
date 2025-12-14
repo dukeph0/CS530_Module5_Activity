@@ -29,23 +29,29 @@ class Fighter:
     # base dimensions; will be overridden after sprite load with scale applied
     WIDTH, HEIGHT = 60, 100
 
-    def __init__(self, x, ground_y, is_ai=False, controls=None):
-        self.scale = 1.6  # make fighters larger on screen
+    def __init__(self, x, ground_y, is_ai=False, controls=None, variant="human"):
+        self.scale = 2.2  # make fighters larger on screen with more detail
         self.x = x
         self.ground_y = ground_y
         self.sprite_path = None
+        self.variant = variant
         self.vx = 0
         # temp rect; will be resized after sprite load using scale
         self.rect = pygame.Rect(int(self.x), int(ground_y - self.HEIGHT), self.WIDTH, self.HEIGHT)
-        self.health = 100
+        self.health = 300 if variant == "frog" else 200
         self.is_ai = is_ai
         self.controls = controls or {}
         self.facing_left = False if not is_ai else True
         self.is_attacking = False
         self.just_started_attack = False
         self.attack_timer = 0.0
-        self.attack_duration = 0.18
+        self.attack_duration = 0.12  # Faster for combos
         self.took_hit = False
+        self.fireball_cooldown = 0.0
+        self.shoot_fireball = False
+        self.combo_count = 0
+        self.combo_timer = 0.0
+        self.last_attack_type = None
 
         # sprite support
         self.sprite_frames = []
@@ -54,6 +60,8 @@ class Fighter:
         # anchor to ground after sprite size applied
         self.y = self.ground_y - self.rect.height
         self.rect.y = int(self.y)
+        # frog hop timer
+        self.hop_cooldown = 0.0
 
     def _load_sprite(self):
         # look for the fighter-specific sprite path if provided, otherwise fallback
@@ -77,14 +85,14 @@ class Fighter:
                     frames.append(frame)
                 self.sprite_frames = frames
                 # map frames to actions (counts must match generator)
-                counts = {'idle': 4, 'walk': 4, 'punch': 3, 'kick': 3, 'jump': 3}
+                counts = {'idle': 4, 'walk': 4, 'punch': 4, 'kick': 4, 'jump': 3, 'jumpkick': 3}
                 idx = 0
                 self.anim_map = {}
                 for action, cnt in counts.items():
                     self.anim_map[action] = frames[idx:idx+cnt]
                     idx += cnt
                 # default animator uses idle
-                self.animator = SpriteAnimator(self.anim_map.get('idle', []), fps=8)
+                self.animator = SpriteAnimator(self.anim_map.get('idle', []), fps=12)  # Faster FPS for flashier moves
                 # resize rect based on sprite frame and scale
                 scaled_w = int(fw * self.scale)
                 scaled_h = int(h * self.scale)
@@ -102,6 +110,7 @@ class Fighter:
         punch_key = self.controls.get("punch")
         kick_key = self.controls.get("kick")
         jump_key = self.controls.get("jump")
+        fireball_key = self.controls.get("fireball")
 
         if left_key and keys[left_key]:
             self.vx = -220
@@ -112,36 +121,61 @@ class Fighter:
         if not self.is_attacking and punch_key and keys[punch_key]:
             self.attack_type = 'punch'
             self.just_started_attack = True
+            # Track combo
+            if self.combo_timer > 0 and self.last_attack_type == 'punch':
+                self.combo_count += 1
+            else:
+                self.combo_count = 1
+            self.combo_timer = 0.4
+            self.last_attack_type = 'punch'
             self.start_attack()
         if not self.is_attacking and kick_key and keys[kick_key]:
             self.attack_type = 'kick'
             self.just_started_attack = True
+            # Track combo
+            if self.combo_timer > 0 and self.last_attack_type == 'kick':
+                self.combo_count += 1
+            else:
+                self.combo_count = 1
+            self.combo_timer = 0.4
+            self.last_attack_type = 'kick'
             self.start_attack(force=True)
         if jump_key and keys[jump_key] and self.on_ground():
-            # jump impulse
+            # jump impulse - Player 1 (human) jumps MUCH higher
             if not hasattr(self, 'vy'):
                 self.vy = 0.0
-            self.vy = -360
+            self.vy = -520 if self.variant == "human" else -420
             # set jump animation
             if hasattr(self, 'anim_map') and 'jump' in self.anim_map:
                 self.animator.frames = self.anim_map['jump']
                 self.animator.index = 0.0
+        # fireball shooting (L key, player only)
+        if not self.is_ai and keys[pygame.K_l] and self.fireball_cooldown <= 0 and self.on_ground():
+            self.shoot_fireball = True
+            self.fireball_cooldown = 0.8
 
     def ai_update(self, other, dt):
         if not self.is_ai:
             return
         # approach player, attack when close
         if other.rect.centerx < self.rect.centerx - 50:
-            self.vx = -120
+            self.vx = -180 if self.variant == "frog" else -120
             self.facing_left = True
         elif other.rect.centerx > self.rect.centerx + 50:
-            self.vx = 120
+            self.vx = 180 if self.variant == "frog" else 120
             self.facing_left = False
         else:
             self.vx = 0
             if not self.is_attacking:
                 self.just_started_attack = True
                 self.start_attack()
+
+        # frog variant hops while moving
+        if self.variant == "frog" and self.on_ground() and abs(self.vx) > 10 and self.hop_cooldown <= 0:
+            if not hasattr(self, 'vy'):
+                self.vy = 0.0
+            self.vy = -440
+            self.hop_cooldown = 0.55
 
     def start_attack(self, force=False):
         if not self.is_attacking and self.on_ground():
@@ -154,6 +188,7 @@ class Fighter:
             if hasattr(self, 'anim_map') and self.attack_type in self.anim_map:
                 self.animator.frames = self.anim_map[self.attack_type]
                 self.animator.index = 0.0
+                self.animator.fps = 14  # Faster attack animations for combos
 
     def attack_rect(self):
         if not self.is_attacking:
@@ -161,9 +196,11 @@ class Fighter:
         # active only in the middle of attack duration
         # position differs for punch vs kick
         atype = getattr(self, 'attack_type', 'punch')
-        w = int(self.rect.width * (0.55 if atype == 'punch' else 0.65))
-        h = int(self.rect.height * 0.2)
-        y_off = int(self.rect.height * (0.35 if atype == 'punch' else 0.55))
+        # Much larger hitboxes to match extended punch/kick animations
+        # Punch extends far forward (Ryu's extended arm), kick extends even further
+        w = int(self.rect.width * (1.2 if atype == 'punch' else 1.5))
+        h = int(self.rect.height * 0.35)  # Taller hitbox
+        y_off = int(self.rect.height * (0.25 if atype == 'punch' else 0.45))
         if self.facing_left:
             return pygame.Rect(self.rect.left - w, self.rect.top + y_off, w, h)
         else:
@@ -177,10 +214,29 @@ class Fighter:
     def take_damage(self, amount):
         self.health = max(0, self.health - amount)
 
-    def update(self, dt):
+    def update(self, dt, screen_width=1024, platform_left=100, platform_right=924):
+        # Check if fighter center is on the platform
+        fighter_center_x = self.x + self.rect.width // 2
+        on_platform = (fighter_center_x >= platform_left and fighter_center_x <= platform_right)
+        
+        # Apply speed penalty when off-platform (50% slower)
+        speed_multiplier = 1.0 if on_platform else 0.5
+        
         # horizontal
-        self.x += self.vx * dt
+        self.x += self.vx * dt * speed_multiplier
+        
+        # Clamp position to keep fighter completely within screen boundaries (window edges)
+        self.x = max(0, min(screen_width - self.rect.width, self.x))
+        
         self.rect.x = int(self.x)
+        
+        # Apply friction/deceleration to knockback momentum
+        if abs(self.vx) > 0:
+            friction = 800 * dt
+            if self.vx > 0:
+                self.vx = max(0, self.vx - friction)
+            else:
+                self.vx = min(0, self.vx + friction)
 
         # vertical physics
         if not hasattr(self, 'vy'):
@@ -200,6 +256,23 @@ class Fighter:
             if self.attack_timer <= 0:
                 self.is_attacking = False
                 self.attack_type = None
+        # frog hop cooldown decay
+        if self.hop_cooldown > 0:
+            self.hop_cooldown -= dt
+            if self.hop_cooldown < 0:
+                self.hop_cooldown = 0
+        # fireball cooldown decay
+        if self.fireball_cooldown > 0:
+            self.fireball_cooldown -= dt
+            if self.fireball_cooldown < 0:
+                self.fireball_cooldown = 0
+        
+        # combo timer decay - reset combo if no attacks for 0.4s
+        if self.combo_timer > 0:
+            self.combo_timer -= dt
+            if self.combo_timer <= 0:
+                self.combo_count = 0
+                self.last_attack_type = None
 
         # update animator based on state
         if hasattr(self, 'anim_map'):
